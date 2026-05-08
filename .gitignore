@@ -1,0 +1,29 @@
+# secrets
+.env
+
+# generated data
+*.db
+*.db-journal
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# jupyter
+.ipynb_checkpoints/
+
+# agent artifacts
+.cache/
+
+# internal docs (not for the repo)
+brain.md
+plan.md
+PLAN.md
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/

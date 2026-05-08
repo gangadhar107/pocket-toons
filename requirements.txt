@@ -1,0 +1,8 @@
+anthropic>=0.39
+pandas>=2.2
+faker>=25
+sqlglot>=25
+matplotlib>=3.8
+python-dotenv>=1.0
+jupyter>=1.0
+streamlit>=1.36

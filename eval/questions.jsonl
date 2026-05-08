@@ -1,0 +1,20 @@
+{"id":"q01","type":"aggregate","question":"What was our DAU last week?","check":"executes"}
+{"id":"q02","type":"aggregate","question":"How many total sessions were there in the last 30 days?","check":"numeric","truth_sql":"SELECT COUNT(*) FROM sessions WHERE date BETWEEN DATE('2026-05-08','-30 days') AND DATE('2026-05-08','-1 days')"}
+{"id":"q03","type":"aggregate","question":"What was the total revenue in the last 14 days?","check":"executes"}
+{"id":"q04","type":"aggregate","question":"How many content views were there in the last 7 days?","check":"executes"}
+{"id":"q05","type":"filtered","question":"DAU for US users last week","check":"executes"}
+{"id":"q06","type":"filtered","question":"How many premium users signed up in the last 30 days?","check":"numeric","truth_sql":"SELECT COUNT(*) FROM users WHERE plan='premium' AND signup_date BETWEEN DATE('2026-05-08','-30 days') AND DATE('2026-05-08','-1 days')","tolerance_pct":5.0,"note":"5% tol allows for ±1 day window-boundary interpretation of 'last 30 days'"}
+{"id":"q07","type":"filtered","question":"Total revenue from Indian users in the last 7 days","check":"numeric","truth_sql":"SELECT ROUND(SUM(t.amount),2) FROM transactions t JOIN users u ON u.id=t.user_id WHERE u.country='IN' AND t.date BETWEEN DATE('2026-05-08','-7 days') AND DATE('2026-05-08','-1 days')","tolerance_pct":3.0}
+{"id":"q08","type":"filtered","question":"Average session duration in seconds for free users","check":"executes"}
+{"id":"q09","type":"cohort","question":"What is D7 retention for users who signed up 30 days ago?","check":"numeric","truth_sql":"SELECT COUNT(*) FROM users WHERE signup_date=DATE('2026-05-08','-30 days')","value_hint":"cohort_size"}
+{"id":"q10","type":"cohort","question":"How many users who signed up 60 days ago came back on day 30?","check":"executes"}
+{"id":"q11","type":"cohort","question":"What is D1 retention for users who signed up 7 days ago?","check":"executes"}
+{"id":"q12","type":"comparison","question":"How did revenue this week compare to last week?","check":"executes"}
+{"id":"q13","type":"comparison","question":"Compare DAU last week versus the week before","check":"executes"}
+{"id":"q14","type":"comparison","question":"How many premium signups this month versus last month?","check":"executes"}
+{"id":"q15","type":"comparison","question":"Number of refunds this week versus last week","check":"executes"}
+{"id":"q16","type":"ambiguous","question":"How are we doing?","check":"clarify"}
+{"id":"q17","type":"ambiguous","question":"Show me active users","check":"clarify"}
+{"id":"q18","type":"ambiguous","question":"What's our retention?","check":"clarify"}
+{"id":"q19","type":"ambiguous","question":"Are we growing?","check":"clarify"}
+{"id":"q20","type":"ambiguous","question":"Show me the popular content","check":"clarify"}
