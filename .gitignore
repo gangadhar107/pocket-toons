@@ -18,11 +18,6 @@ venv/
 # agent artifacts
 .cache/
 
-# internal docs (not for the repo)
-brain.md
-plan.md
-PLAN.md
-
 # os / editor
 .DS_Store
 .idea/

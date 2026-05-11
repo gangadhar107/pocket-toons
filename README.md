@@ -1,6 +1,6 @@
 # Analytics Q&A Agent
 
-A Python 3.11 synchronous agent that answers natural-language product-analytics questions over a 4-table SQLite warehouse via Claude Sonnet 4.5 (NL → JSON → SQL → sqlite → self-check), surfaced through a Streamlit chat UI. Each answer shows a Chart/Table view up front; the generated SQL sits behind a collapsed **View SQL query** expander for users who want to inspect it.
+A Python 3.11 synchronous agent that answers natural-language product-analytics questions over a 4-table SQLite warehouse via Claude Sonnet 4.5. For 13 canonical metrics (DAU, WAU, MAU, revenue, ARPU, retention, etc.) the agent resolves the question via a YAML-based metrics catalog — deterministic SQL, no LLM call needed. For everything else: NL → JSON → SQL → sqlite → self-check. Surfaced through a Streamlit chat UI where each answer shows a Chart/Table view up front; the generated SQL sits behind a collapsed **View SQL query** expander. Canonical metric answers display a teal "canonical metric" pill for transparency.
 
 ## How to run
 
@@ -22,6 +22,9 @@ Eval and notebook: `python eval/run_eval.py` and `jupyter notebook demo.ipynb`. 
                                   ▼
           agent.ask(question) -> Answer | ClarificationNeeded
                                   │
+   0. MetricsCatalog.match()   ──► canonical SQL (if matched)
+      ├── matched?  ─► skip to step 3 (no LLM call)
+      └── no match? ─► proceed to step 1
    1. Claude call #1  ──►  {"mode","clarification","sql"}   (SYSTEM_GENERATE)
    2. if clarify    ─► return ClarificationNeeded
    3. sqlglot validate_sql()      (one retry on SQLValidationError)
@@ -30,7 +33,7 @@ Eval and notebook: `python eval/run_eval.py` and `jupyter notebook demo.ipynb`. 
    6. Claude call #2  ──►  {"ok","reason","summary"}  (SYSTEM_SELFCHECK)
    7. chart.render(df) -> Figure | None     (None for scalars/single-row)
    8. history.append() -> .cache/history.json
-   9. return Answer(question, sql, df, summary, self_check, chart)
+   9. return Answer(question, sql, df, summary, self_check, chart, metric_name)
 ```
 
 **No framework.** The task is a narrow NL→SQL→execute→verify loop; LangChain would add abstraction tax and hide the prompts. A few functions + one Anthropic client (~150 lines of orchestration) are clearer and easier to debug.
@@ -40,6 +43,16 @@ Eval and notebook: `python eval/run_eval.py` and `jupyter notebook demo.ipynb`. 
 **Synchronous.** One user, one question. `async` would be ceremony with zero benefit.
 
 **sqlglot for pre-execution validation.** Cheap guardrail against hallucinated tables/columns and non-SELECT statements, before sqlite3 touches anything. See next section.
+
+## Metrics catalog
+
+13 canonical business metrics defined in `metrics.yaml` (DAU, WAU, MAU, avg session duration, net revenue, ARPU, refund rate, new signups, plan distribution, daily content views, top content, D7 retention, D30 retention). Each metric has aliases, a description, and a canonical SQL template.
+
+**How it works:** `agent/metrics.py` tokenises the user's question, computes Jaccard similarity against all metric aliases, and returns the best match if score ≥ 0.4. When matched, the SQL template is rendered with extracted date parameters — **no LLM call needed** for SQL generation. If multiple metrics score equally (e.g. "active users" ties DAU/WAU/MAU), the system falls through to the LLM, which asks for clarification.
+
+**Why it matters:** Canonical metrics always produce the same SQL regardless of phrasing. "What was our DAU last week?", "Show me daily active users for the past 7 days", and "Daily actives" all resolve to the exact same query. Eliminates an entire class of phrasing-sensitivity bugs for core KPIs.
+
+**Transparency:** When a catalog metric is used, the UI shows a teal pill (e.g. `canonical metric: Daily Active Users`) above the answer so the user knows the SQL came from a curated definition, not LLM generation.
 
 ## How wrong/hallucinated SQL is handled
 
@@ -53,7 +66,7 @@ Three layers:
 
 ## Evaluation
 
-20 hand-written questions in `eval/questions.jsonl`, balanced: 4 aggregate / 4 filtered / 3 cohort / 4 comparison / 5 ambiguous. 11 check execution, 4 check numeric match against ground-truth SQL computed from the DB at eval time, 5 check that ambiguous questions trigger `ClarificationNeeded`. Tolerance is per-question.
+25 hand-written questions in `eval/questions.jsonl`, balanced: 4 aggregate / 4 filtered / 3 cohort / 4 comparison / 5 ambiguous / 5 catalog. 16 check execution, 9 check numeric match against ground-truth SQL computed from the DB at eval time, 5 check that ambiguous questions trigger `ClarificationNeeded`. Tolerance is per-question. q21–q25 test canonical metrics (DAU, MAU, Net Revenue, ARPU, D7 Retention) with 0% tolerance.
 
 **First run: 18/20 (90%).** Two failures, both instructive:
 
@@ -83,7 +96,7 @@ Scorecard separates execution-success from numeric-match deliberately: a run cou
 The current design (4 tables inlined in the prompt) doesn't scale past ~20 tables before the prompt gets unwieldy. The real architecture would be:
 
 - **Schema retrieval.** Embed each table's name + description + top column names; at query time, pick the top-k most relevant tables by similarity to the question and inject only those into the prompt.
-- **Semantic / metrics layer.** Define named metrics ("DAU", "ARPU", "D7 retention") in a YAML catalog, each owning canonical SQL. Claude picks a metric; the metric owns the query. Removes an entire class of phrasing-sensitivity bugs.
+- ~~**Semantic / metrics layer.**~~ ✅ **Done** — see "Metrics catalog" section above. 13 canonical metrics with Jaccard fuzzy matching, tie-detection, and deterministic SQL rendering.
 - **Read-replica + statement timeouts + row caps enforced at the warehouse**, not just in the app. Defense in depth.
 - **Row-level auth via views.** The user's identity threads into a view layer; the agent queries the view, never the base table. No chance of leaking another tenant's data via a clever prompt.
 - **Query-plan check before execute.** Reject queries whose EXPLAIN shows a full-table scan on any table with >1B rows. Catches the "forgot the WHERE clause" failure mode.
