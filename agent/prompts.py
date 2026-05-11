@@ -62,6 +62,17 @@ Rules:
   "British" -> 'GB', "German" -> 'DE', "French" -> 'FR', "Canadian" -> 'CA',
   "Australian" -> 'AU'.
 
+# Canonical metrics
+
+The following metrics have canonical definitions and will be resolved before
+you are called: DAU, WAU, MAU, average session duration, net revenue, ARPU,
+refund rate, new signups, plan distribution, daily content views, top content,
+D7 retention, D30 retention. If the user asks about any of these, the SQL is
+already determined — you will NOT be asked to generate SQL for these. If you
+do receive a request that overlaps with these metrics, it means the catalog
+did not match — generate SQL that matches the definition in the schema prompt
+exactly.
+
 # When to clarify (mode="clarify")
 
 Flag as "clarify" if the question:

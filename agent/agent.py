@@ -7,8 +7,10 @@ Public API:
     ask(question: str) -> Answer | ClarificationNeeded
 
 Pipeline:
-    1. SYSTEM_GENERATE call -> {mode, clarification, sql}
-    2. If mode="clarify": append to history, return ClarificationNeeded.
+    1. Metrics catalog lookup (check for canonical metric match)
+    2. If metric matched → use canonical SQL, skip LLM generation.
+       Otherwise → SYSTEM_GENERATE call -> {mode, clarification, sql}
+    3. If mode="clarify": append to history, return ClarificationNeeded.
     3. validate_sql() (sqlglot). On SQLValidationError: one retry with the
        error text forwarded to the LLM.
     4. Append defensive LIMIT 1000 if the query has no top-level LIMIT.
@@ -43,6 +45,7 @@ from matplotlib.figure import Figure
 
 from agent import chart, history
 from agent.prompts import SYSTEM_GENERATE, SYSTEM_SELFCHECK
+from agent.schema import TODAY
 from agent.validate import DIALECT, SQLValidationError, validate_sql
 
 load_dotenv()
@@ -75,6 +78,7 @@ class Answer:
     summary: str
     self_check: SelfCheck
     chart: Optional[Figure] = field(default=None)
+    metric_name: Optional[str] = field(default=None)
 
 
 @dataclass(frozen=True)
@@ -195,23 +199,41 @@ def ask(
     if not question:
         raise ValueError("empty question")
 
-    # 1. Generate / classify.
-    gen = _call_claude(SYSTEM_GENERATE, question)
-    mode = gen.get("mode")
+    # ── 0. Metrics catalog pre-lookup ──────────────────────────────────────
+    # Import lazily so missing pyyaml never breaks existing tests.
+    metric_name: Optional[str] = None
+    sql: Optional[str] = None
+    from agent.metrics import MetricsCatalog  # noqa: local import by design
+    catalog = MetricsCatalog()
+    catalog.load()
+    metric_match = catalog.match(question)
+    if metric_match is not None:
+        params = catalog.params_from_question(question, TODAY)
+        try:
+            sql = catalog.render_sql(metric_match, params)
+            metric_name = metric_match.metric_name
+        except ValueError:
+            # Missing param — fall through to LLM path.
+            metric_match = None
 
-    # 2. Clarification branch.
-    if mode == "clarify":
-        clar = (gen.get("clarification") or "").strip() or \
-               "Could you narrow that down — which metric and time window?"
-        history.append(question=question, sql=None, summary=clar, ok=False)
-        return ClarificationNeeded(question=question, clarification=clar)
+    # ── 1. Generate / classify (only if no metric matched) ────────────────
+    if sql is None:
+        gen = _call_claude(SYSTEM_GENERATE, question)
+        mode = gen.get("mode")
 
-    if mode != "answer":
-        raise RuntimeError(f"unexpected mode from LLM: {mode!r}")
+        # 2. Clarification branch.
+        if mode == "clarify":
+            clar = (gen.get("clarification") or "").strip() or \
+                   "Could you narrow that down — which metric and time window?"
+            history.append(question=question, sql=None, summary=clar, ok=False)
+            return ClarificationNeeded(question=question, clarification=clar)
 
-    sql = (gen.get("sql") or "").strip()
-    if not sql:
-        raise RuntimeError("LLM returned mode='answer' with empty SQL")
+        if mode != "answer":
+            raise RuntimeError(f"unexpected mode from LLM: {mode!r}")
+
+        sql = (gen.get("sql") or "").strip()
+        if not sql:
+            raise RuntimeError("LLM returned mode='answer' with empty SQL")
 
     # 3. Validate. One retry on SQLValidationError.
     try:
@@ -288,4 +310,5 @@ def ask(
         summary=summary,
         self_check=self_check,
         chart=fig,
+        metric_name=metric_name,
     )

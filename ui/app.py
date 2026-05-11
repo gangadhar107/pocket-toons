@@ -136,6 +136,21 @@ st.markdown(
           color: #3C3489;
       }
 
+      /* --- Canonical metric pill --------------------------------------- */
+      .metric-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 11px;
+          padding: 3px 10px;
+          margin-bottom: 8px;
+          border-radius: 20px;
+          background: #E0F7F1;
+          border: 0.5px solid #80CBC4;
+          color: #00695C;
+          font-weight: 500;
+      }
+
       /* --- SQL code block: dark + green mono ---------------------------- */
       .sql-label {
           font-size: 10px;
@@ -357,6 +372,12 @@ def render_user(msg: dict) -> None:
 
 def render_answer(ans: Answer) -> None:
     with st.chat_message("assistant"):
+        # Canonical metric pill — shown when the answer came from the catalog.
+        if getattr(ans, "metric_name", None):
+            st.markdown(
+                f"<div class='metric-pill'>canonical metric: {_html_escape(ans.metric_name)}</div>",
+                unsafe_allow_html=True,
+            )
         st.markdown(ans.summary)
 
         if ans.chart is not None:

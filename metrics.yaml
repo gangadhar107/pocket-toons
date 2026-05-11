@@ -1,0 +1,415 @@
+# metrics.yaml
+# Canonical metric definitions for the Analytics Q&A Agent.
+#
+# RULES:
+#   - Every metric here has ONE definition. The agent never invents its own.
+#   - SQL templates use {start_date}, {end_date}, or {cohort_date} as placeholders.
+#   - These are substituted by MetricsCatalog.render_sql() before execution.
+#   - Refunds are stored as NEGATIVE amounts in transactions.amount.
+#     SUM(amount) = net revenue. Never subtract refunds separately.
+#   - TODAY is pinned to 2026-05-08. Never use date('now') in SQL here.
+#
+# GRAIN VALUES:
+#   day     → result has one row per date
+#   week    → result has one row per week
+#   month   → result has one row per calendar month
+#   cohort  → result is a single aggregate row for one cohort date
+#   period  → result is a single aggregate row for the full date range
+#   ranked  → result is ordered rows (top-N style)
+#
+# ADDING A NEW METRIC:
+#   1. Pick a snake_case key.
+#   2. Write aliases — every natural-language phrase a user might say.
+#   3. Write the canonical SQL using only columns in ALL_COLUMNS.
+#   4. Add at least one eval question to eval/questions.jsonl with check: numeric.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─── ACTIVITY ────────────────────────────────────────────────────────────────
+
+dau:
+  name: Daily Active Users
+  aliases:
+    - daily active users
+    - dau
+    - active users per day
+    - daily actives
+    - users active per day
+    - how many users were active
+    - active users each day
+  description: >
+    Count of distinct users who had at least one session on each date
+    in the requested period. One row per day. Uses the sessions table only.
+    A user counts as active on a day if they appear in sessions on that date,
+    regardless of session length.
+  grain: day
+  sql: |
+    SELECT
+      date,
+      COUNT(DISTINCT user_id) AS dau
+    FROM sessions
+    WHERE date BETWEEN {start_date} AND {end_date}
+    GROUP BY date
+    ORDER BY date
+
+
+wau:
+  name: Weekly Active Users
+  aliases:
+    - weekly active users
+    - wau
+    - active users per week
+    - weekly actives
+    - users active per week
+    - weekly engagement
+  description: >
+    Count of distinct users who had at least one session in each
+    ISO calendar week (Monday–Sunday). One row per week.
+    A user who appears on multiple days in the same week is counted once.
+  grain: week
+  sql: |
+    SELECT
+      DATE(date, 'weekday 0', '-6 days') AS week_start,
+      COUNT(DISTINCT user_id)            AS wau
+    FROM sessions
+    WHERE date BETWEEN {start_date} AND {end_date}
+    GROUP BY week_start
+    ORDER BY week_start
+
+
+mau:
+  name: Monthly Active Users
+  aliases:
+    - monthly active users
+    - mau
+    - active users per month
+    - monthly actives
+    - users active per month
+    - monthly engagement
+  description: >
+    Count of distinct users who had at least one session in each
+    calendar month (YYYY-MM). One row per month.
+    A user who appears on multiple days in the same month is counted once.
+  grain: month
+  sql: |
+    SELECT
+      strftime('%Y-%m', date) AS month,
+      COUNT(DISTINCT user_id) AS mau
+    FROM sessions
+    WHERE date BETWEEN {start_date} AND {end_date}
+    GROUP BY month
+    ORDER BY month
+
+
+avg_session_duration:
+  name: Average Session Duration
+  aliases:
+    - average session duration
+    - avg session duration
+    - mean session length
+    - session duration
+    - how long are sessions
+    - average session length
+    - session time
+    - time spent per session
+  description: >
+    Mean of duration_sec across all sessions in the requested period.
+    Result is in seconds. Divide by 60 in the summary for human-readable minutes.
+    One row per day so trends are visible. Outliers (very long sessions)
+    are included — no cap is applied.
+  grain: day
+  sql: |
+    SELECT
+      date,
+      ROUND(AVG(duration_sec), 1) AS avg_duration_sec,
+      ROUND(AVG(duration_sec) / 60.0, 2) AS avg_duration_min
+    FROM sessions
+    WHERE date BETWEEN {start_date} AND {end_date}
+    GROUP BY date
+    ORDER BY date
+
+
+# ─── REVENUE ─────────────────────────────────────────────────────────────────
+
+net_revenue:
+  name: Net Revenue
+  aliases:
+    - net revenue
+    - revenue
+    - total revenue
+    - earnings
+    - how much revenue
+    - income
+    - daily revenue
+    - revenue per day
+  description: >
+    SUM of transactions.amount grouped by date. Refunds are stored as
+    NEGATIVE values, so SUM(amount) gives net revenue directly.
+    Do NOT subtract refunds separately — they are already negative.
+    One row per day. Includes all transaction types: subscription, ppv, refund.
+  grain: day
+  sql: |
+    SELECT
+      date,
+      ROUND(SUM(amount), 2) AS net_revenue
+    FROM transactions
+    WHERE date BETWEEN {start_date} AND {end_date}
+    GROUP BY date
+    ORDER BY date
+
+
+arpu:
+  name: Average Revenue Per User
+  aliases:
+    - arpu
+    - average revenue per user
+    - revenue per user
+    - avg revenue per user
+    - revenue per paying user
+  description: >
+    Total net revenue divided by the count of distinct users who made
+    at least one non-refund transaction in the period.
+    Formula: SUM(amount) / COUNT(DISTINCT user_id) where type != 'refund'.
+    Returns a single scalar for the full period — not broken down by day.
+    Refunds are included in SUM(amount) (they reduce the numerator)
+    but refund-only users are excluded from the denominator.
+  grain: period
+  sql: |
+    SELECT
+      ROUND(
+        SUM(amount) / NULLIF(COUNT(DISTINCT user_id), 0),
+        2
+      ) AS arpu
+    FROM transactions
+    WHERE date BETWEEN {start_date} AND {end_date}
+      AND type != 'refund'
+
+
+refund_rate:
+  name: Refund Rate
+  aliases:
+    - refund rate
+    - refunds
+    - refund percentage
+    - how many refunds
+    - chargeback rate
+    - refund ratio
+    - percentage of refunds
+  description: >
+    Percentage of transactions that are refunds in the period.
+    Formula: COUNT(refund rows) / COUNT(all rows) * 100.
+    A high refund rate signals billing or content quality problems.
+    Returns a single scalar for the full period.
+  grain: period
+  sql: |
+    SELECT
+      COUNT(*)                                                         AS total_transactions,
+      SUM(CASE WHEN type = 'refund' THEN 1 ELSE 0 END)               AS refund_count,
+      ROUND(
+        100.0 * SUM(CASE WHEN type = 'refund' THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(*), 0),
+        2
+      )                                                               AS refund_rate_pct
+    FROM transactions
+    WHERE date BETWEEN {start_date} AND {end_date}
+
+
+# ─── ACQUISITION ─────────────────────────────────────────────────────────────
+
+new_signups:
+  name: New Signups
+  aliases:
+    - new signups
+    - signups
+    - new users
+    - user signups
+    - registrations
+    - new registrations
+    - how many users signed up
+    - user growth
+    - new accounts
+  description: >
+    Count of users whose signup_date falls in the requested period.
+    One row per day. Uses the users table only — does not require
+    a session to have occurred. A user is counted on the date they
+    signed up, regardless of whether they were ever active.
+  grain: day
+  sql: |
+    SELECT
+      signup_date AS date,
+      COUNT(*)    AS new_signups
+    FROM users
+    WHERE signup_date BETWEEN {start_date} AND {end_date}
+    GROUP BY signup_date
+    ORDER BY signup_date
+
+
+plan_distribution:
+  name: Plan Distribution
+  aliases:
+    - plan distribution
+    - plans
+    - plan breakdown
+    - users by plan
+    - free vs premium
+    - plan split
+    - subscription breakdown
+    - how many users on each plan
+    - plan mix
+  description: >
+    Count of total users on each plan (free, premium, trial) as of
+    the current snapshot. This is NOT time-series — it reflects the
+    current state of the users table, not a period. The date params
+    are ignored for this metric. Returns three rows: one per plan.
+  grain: period
+  sql: |
+    SELECT
+      plan,
+      COUNT(*) AS user_count,
+      ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct_of_total
+    FROM users
+    GROUP BY plan
+    ORDER BY user_count DESC
+
+
+# ─── CONTENT ─────────────────────────────────────────────────────────────────
+
+daily_content_views:
+  name: Daily Content Views
+  aliases:
+    - daily content views
+    - content views
+    - views per day
+    - content consumption
+    - how many views
+    - total views
+    - content engagement
+    - page views
+    - daily views
+  description: >
+    Total rows in content_views per day — each row represents one
+    view event by one user of one content item. Does not deduplicate
+    repeat views of the same content by the same user.
+    One row per day.
+  grain: day
+  sql: |
+    SELECT
+      date,
+      COUNT(*)                    AS total_views,
+      COUNT(DISTINCT user_id)     AS unique_viewers,
+      COUNT(DISTINCT content_id)  AS unique_content_items
+    FROM content_views
+    WHERE date BETWEEN {start_date} AND {end_date}
+    GROUP BY date
+    ORDER BY date
+
+
+top_content:
+  name: Top Content
+  aliases:
+    - top content
+    - popular content
+    - most viewed content
+    - most popular content
+    - top videos
+    - top titles
+    - best performing content
+    - content rankings
+    - what content is popular
+    - trending content
+  description: >
+    Top 10 content items ranked by total view count in the period.
+    content_id is the identifier — there is no content title in the
+    schema, so content_id is the best available label.
+    Returns up to 10 rows ordered by views descending.
+  grain: ranked
+  sql: |
+    SELECT
+      content_id,
+      COUNT(*)                AS total_views,
+      COUNT(DISTINCT user_id) AS unique_viewers
+    FROM content_views
+    WHERE date BETWEEN {start_date} AND {end_date}
+    GROUP BY content_id
+    ORDER BY total_views DESC
+    LIMIT 10
+
+
+# ─── RETENTION ───────────────────────────────────────────────────────────────
+
+d7_retention:
+  name: D7 Retention
+  aliases:
+    - d7 retention
+    - day 7 retention
+    - 7 day retention
+    - week 1 retention
+    - seven day retention
+    - retention after 7 days
+    - d7
+  description: >
+    Percentage of users who signed up on {cohort_date} and returned
+    (had at least one session) exactly 7 days later.
+    Formula: retained_users / cohort_size * 100.
+    NULLIF prevents divide-by-zero on empty cohorts.
+    Small cohorts (< 30 users) produce noisy results — the self-check
+    should flag this. Returns a single row with cohort_size, retained, pct.
+  grain: cohort
+  sql: |
+    WITH cohort AS (
+      SELECT id AS user_id
+      FROM users
+      WHERE signup_date = {cohort_date}
+    )
+    SELECT
+      COUNT(DISTINCT cohort.user_id)                                      AS cohort_size,
+      COUNT(DISTINCT s.user_id)                                           AS retained_d7,
+      ROUND(
+        100.0 * COUNT(DISTINCT s.user_id)
+        / NULLIF(COUNT(DISTINCT cohort.user_id), 0),
+        2
+      )                                                                   AS retention_pct
+    FROM cohort
+    LEFT JOIN sessions s
+      ON  s.user_id = cohort.user_id
+      AND s.date    = DATE({cohort_date}, '+7 days')
+
+
+d30_retention:
+  name: D30 Retention
+  aliases:
+    - d30 retention
+    - day 30 retention
+    - 30 day retention
+    - month 1 retention
+    - thirty day retention
+    - retention after 30 days
+    - d30
+    - monthly retention
+  description: >
+    Percentage of users who signed up on {cohort_date} and returned
+    (had at least one session) exactly 30 days later.
+    Identical logic to D7 but the join date is +30 days.
+    NOTE: cohort_date must be at least 30 days before TODAY (2026-05-08)
+    for retained users to exist in the data. If cohort_date is too recent,
+    retained_d30 will be 0 — this is expected, not a bug.
+    Returns a single row with cohort_size, retained, pct.
+  grain: cohort
+  sql: |
+    WITH cohort AS (
+      SELECT id AS user_id
+      FROM users
+      WHERE signup_date = {cohort_date}
+    )
+    SELECT
+      COUNT(DISTINCT cohort.user_id)                                      AS cohort_size,
+      COUNT(DISTINCT s.user_id)                                           AS retained_d30,
+      ROUND(
+        100.0 * COUNT(DISTINCT s.user_id)
+        / NULLIF(COUNT(DISTINCT cohort.user_id), 0),
+        2
+      )                                                                   AS retention_pct
+    FROM cohort
+    LEFT JOIN sessions s
+      ON  s.user_id = cohort.user_id
+      AND s.date    = DATE({cohort_date}, '+30 days')
